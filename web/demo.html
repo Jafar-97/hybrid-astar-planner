@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hybrid A* Motion Planner — Live Demo</title>
+<style>
+  :root {
+    --bg:#0e1117; --panel:#161b24; --panel2:#1b2230; --line:#2a3242;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#2ea3f2; --plan:#f2c744;
+    --ok:#3ddc84; --goal:#ff6b6b;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;
+  }
+  header { padding:20px 24px 8px; }
+  h1 { margin:0; font-size:20px; font-weight:650; letter-spacing:.2px; }
+  header p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:820px; }
+  .wrap { display:flex; gap:18px; padding:16px 24px 28px; flex-wrap:wrap; align-items:flex-start; }
+  .stage { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  canvas { display:block; border-radius:8px; background:#0b0e14; cursor:crosshair; max-width:100%; height:auto; }
+  .side { width:280px; display:flex; flex-direction:column; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600; }
+  button {
+    font:inherit; color:var(--text); background:var(--panel2); border:1px solid var(--line);
+    border-radius:8px; padding:9px 12px; cursor:pointer; transition:.12s; width:100%;
+  }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#04121f; font-weight:650; }
+  button.primary:hover { filter:brightness(1.08); }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  select, .seg { width:100%; }
+  select { font:inherit; color:var(--text); background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg label { flex:1; text-align:center; padding:8px 4px; font-size:12px; cursor:pointer; color:var(--muted); }
+  .seg input { display:none; }
+  .seg label.active { background:var(--panel2); color:var(--text); }
+  .metrics { display:grid; grid-template-columns:1fr auto; gap:6px 10px; font-size:13px; }
+  .metrics .k { color:var(--muted); }
+  .metrics .v { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .legend { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
+  .legend span { display:inline-block; width:22px; height:0; border-top-width:3px; border-top-style:solid; margin-right:8px; vertical-align:middle; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:8px; vertical-align:middle; }
+  .hint { color:var(--muted); font-size:12px; margin-top:2px; }
+  .status { font-size:12px; color:var(--muted); min-height:16px; }
+  a { color:var(--accent); }
+  footer { padding:0 24px 28px; color:var(--muted); font-size:12px; max-width:900px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hybrid A* Motion Planner — Live Demo</h1>
+  <p>A car-like vehicle plans a kinematically feasible path through a costmap with <b>Hybrid A*</b>
+     (dual Dubins + Dijkstra heuristic, analytic Dubins goal expansion), then tracks it with a
+     <b>pure-pursuit + PID</b> controller on a bicycle-model simulation — all running live in your browser.
+     Draw obstacles, move the goal, and hit <b>Plan &amp; Drive</b>.</p>
+</header>
+
+<div class="wrap">
+  <div class="stage">
+    <canvas id="cv" width="960" height="640"></canvas>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <button id="plan" class="primary">▶ Plan &amp; Drive</button>
+      </div>
+      <div class="row" style="margin-bottom:10px;">
+        <button id="clear">Clear obstacles</button>
+        <button id="reset">Reset</button>
+      </div>
+      <label class="hint">Scenario preset</label>
+      <select id="preset" style="margin:4px 0 12px;">
+        <option value="obstacles">Obstacle field</option>
+        <option value="scurve">S-curve</option>
+        <option value="empty">Empty arena</option>
+      </select>
+      <label class="hint">Click / drag mode</label>
+      <div class="seg" id="mode" style="margin-top:4px;">
+        <label data-m="obstacle" class="active"><input type="radio" name="mode" checked>Obstacle</label>
+        <label data-m="start"><input type="radio" name="mode">Start</label>
+        <label data-m="goal"><input type="radio" name="mode">Goal</label>
+      </div>
+      <div class="status" id="status" style="margin-top:10px;">Ready.</div>
+    </div>
+
+    <div class="card">
+      <h2>Metrics</h2>
+      <div class="metrics">
+        <div class="k">Plan status</div><div class="v" id="m_status">—</div>
+        <div class="k">Plan time</div><div class="v" id="m_time">—</div>
+        <div class="k">Nodes expanded</div><div class="v" id="m_nodes">—</div>
+        <div class="k">Path length</div><div class="v" id="m_len">—</div>
+        <div class="k">Cross-track RMS</div><div class="v" id="m_rms">—</div>
+        <div class="k">Cross-track max</div><div class="v" id="m_max">—</div>
+        <div class="k">Speed (live)</div><div class="v" id="m_speed">—</div>
+        <div class="k">Cross-track (live)</div><div class="v" id="m_cte">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Legend</h2>
+      <div class="legend">
+        <div><span style="border-top-color:var(--plan);"></span>Hybrid A* plan</div>
+        <div><span style="border-top-color:var(--accent);"></span>Tracked trajectory</div>
+        <div><i class="dot" style="background:var(--ok);"></i>Start &nbsp;
+             <i class="dot" style="background:var(--goal);"></i>Goal</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  This runs a faithful JavaScript port of the C++ implementation in this repo (same bicycle model,
+  heuristics, Dubins math, and controller). The C++ version is the reference; it plans the same
+  scenarios in ~150&nbsp;ms. Not production autonomy code — a clean implementation of a known
+  algorithm (Hybrid A*, Dolgov &amp; Thrun et&nbsp;al.) with measured results.
+</footer>
+
+<script>
+/* Hybrid A* motion planner + pure-pursuit tracking — JavaScript port.
+ *
+ * This is a faithful port of the C++ implementation in this repo (same
+ * bicycle model, same dual heuristic, same Dubins analytic expansion, same
+ * pure-pursuit controller). It runs entirely in the browser so the demo needs
+ * no build step. The C++ version remains the reference implementation.
+ *
+ * Works both in the browser (attaches to window.AP) and under Node (exports)
+ * so the algorithm can be unit-tested headlessly.
+ */
+(function (root) {
+  "use strict";
+  const PI = Math.PI;
+
+  function normalizeAngle(a) {
+    while (a > PI) a -= 2 * PI;
+    while (a <= -PI) a += 2 * PI;
+    return a;
+  }
+  function mod2pi(a) {
+    let r = a % (2 * PI);
+    if (r < 0) r += 2 * PI;
+    return r;
+  }
+  const hypot2 = (dx, dy) => Math.sqrt(dx * dx + dy * dy);
+  const dist = (a, b) => hypot2(a.x - b.x, a.y - b.y);
+
+  // ---- bicycle model ----
+  function bicycleStep(p, steer, ds, L) {
+    return {
+      x: p.x + ds * Math.cos(p.theta),
+      y: p.y + ds * Math.sin(p.theta),
+      theta: normalizeAngle(p.theta + (ds * Math.tan(steer)) / L),
+    };
+  }
+
+  // ---- vehicle ----
+  function defaultVehicle() {
+    const v = {
+      wheelbase: 2.7, max_steer: 0.55, width: 1.9, length: 4.5,
+      max_speed: 8.0, max_accel: 2.5,
+    };
+    v.minTurnRadius = () => v.wheelbase / Math.tan(v.max_steer);
+    return v;
+  }
+
+  // ---- grid map / costmap ----
+  class GridMap {
+    constructor(widthM, heightM, res) {
+      this.width = widthM; this.height = heightM; this.res = res;
+      this.cols = Math.ceil(widthM / res);
+      this.rows = Math.ceil(heightM / res);
+      this.occ = new Uint8Array(this.cols * this.rows);
+      this.obstacles = [];
+    }
+    idx(cx, cy) { return cy * this.cols + cx; }
+    worldToCell(x, y) {
+      const cx = Math.floor(x / this.res), cy = Math.floor(y / this.res);
+      return { cx, cy, ok: cx >= 0 && cx < this.cols && cy >= 0 && cy < this.rows };
+    }
+    inBounds(x, y) { return x >= 0 && y >= 0 && x < this.width && y < this.height; }
+    occupied(cx, cy) {
+      if (cx < 0 || cx >= this.cols || cy < 0 || cy >= this.rows) return true;
+      return this.occ[this.idx(cx, cy)] !== 0;
+    }
+    isFree(x, y) {
+      const c = this.worldToCell(x, y);
+      if (!c.ok) return false;
+      return this.occ[this.idx(c.cx, c.cy)] === 0;
+    }
+    addObstacle(o) {
+      this.obstacles.push(o);
+      const a = this.worldToCell(Math.min(o.x0, o.x1), Math.min(o.y0, o.y1));
+      const b = this.worldToCell(Math.max(o.x0, o.x1), Math.max(o.y0, o.y1));
+      const cx0 = Math.max(0, a.cx), cy0 = Math.max(0, a.cy);
+      const cx1 = Math.min(this.cols - 1, b.cx), cy1 = Math.min(this.rows - 1, b.cy);
+      for (let cy = cy0; cy <= cy1; cy++)
+        for (let cx = cx0; cx <= cx1; cx++) this.occ[this.idx(cx, cy)] = 1;
+    }
+    inflate(radius) {
+      const r = Math.ceil(radius / this.res);
+      if (r <= 0) return;
+      const src = this.occ.slice();
+      for (let cy = 0; cy < this.rows; cy++)
+        for (let cx = 0; cx < this.cols; cx++) {
+          if (src[this.idx(cx, cy)] === 0) continue;
+          for (let dy = -r; dy <= r; dy++)
+            for (let dx = -r; dx <= r; dx++) {
+              if (dx * dx + dy * dy > r * r) continue;
+              const nx = cx + dx, ny = cy + dy;
+              if (nx < 0 || nx >= this.cols || ny < 0 || ny >= this.rows) continue;
+              this.occ[this.idx(nx, ny)] = 1;
+            }
+        }
+    }
+  }
+
+  // ---- Dubins curves ----
+  function dubinsWords(a, b, d) {
+    const sa = Math.sin(a), sb = Math.sin(b), ca = Math.cos(a), cb = Math.cos(b);
+    const cab = Math.cos(a - b);
+    const out = [];
+    // LSL
+    {
+      const p2 = 2 + d * d - 2 * cab + 2 * d * (sa - sb);
+      if (p2 >= 0) {
+        const tmp = Math.atan2(cb - ca, d + sa - sb);
+        out.push({ t: mod2pi(-a + tmp), p: Math.sqrt(p2), q: mod2pi(b - tmp), types: ["L", "S", "L"] });
+      }
+    }
+    // RSR
+    {
+      const p2 = 2 + d * d - 2 * cab + 2 * d * (sb - sa);
+      if (p2 >= 0) {
+        const tmp = Math.atan2(ca - cb, d - sa + sb);
+        out.push({ t: mod2pi(a - tmp), p: Math.sqrt(p2), q: mod2pi(-b + tmp), types: ["R", "S", "R"] });
+      }
+    }
+    // LSR
+    {
+      const p2 = -2 + d * d + 2 * cab + 2 * d * (sa + sb);
+      if (p2 >= 0) {
+        const p = Math.sqrt(p2);
+        const tmp = Math.atan2(-ca - cb, d + sa + sb) - Math.atan2(-2.0, p);
+        out.push({ t: mod2pi(-a + tmp), p, q: mod2pi(-b + tmp), types: ["L", "S", "R"] });
+      }
+    }
+    // RSL
+    {
+      const p2 = d * d - 2 + 2 * cab - 2 * d * (sa + sb);
+      if (p2 >= 0) {
+        const p = Math.sqrt(p2);
+        const tmp = Math.atan2(ca + cb, d - sa - sb) - Math.atan2(2.0, p);
+        out.push({ t: mod2pi(a - tmp), p, q: mod2pi(b - tmp), types: ["R", "S", "L"] });
+      }
+    }
+    // RLR
+    {
+      const tmp = (6 - d * d + 2 * cab + 2 * d * (sa - sb)) / 8;
+      if (Math.abs(tmp) <= 1) {
+        const p = mod2pi(2 * PI - Math.acos(tmp));
+        const t = mod2pi(a - Math.atan2(ca - cb, d - sa + sb) + p / 2);
+        out.push({ t, p, q: mod2pi(a - b - t + p), types: ["R", "L", "R"] });
+      }
+    }
+    // LRL
+    {
+      const tmp = (6 - d * d + 2 * cab + 2 * d * (-sa + sb)) / 8;
+      if (Math.abs(tmp) <= 1) {
+        const p = mod2pi(2 * PI - Math.acos(tmp));
+        const t = mod2pi(-a - Math.atan2(ca - cb, d + sa - sb) + p / 2);
+        out.push({ t, p, q: mod2pi(mod2pi(b) - a - t + p), types: ["L", "R", "L"] });
+      }
+    }
+    return out;
+  }
+
+  function dubinsShortest(start, goal, r) {
+    if (r <= 0) return { valid: false };
+    const dx = goal.x - start.x, dy = goal.y - start.y;
+    const D = hypot2(dx, dy);
+    const d = D / r;
+    const theta = Math.atan2(dy, dx);
+    const a = mod2pi(start.theta - theta);
+    const b = mod2pi(goal.theta - theta);
+    const words = dubinsWords(a, b, d);
+    let best = null, bestCost = Infinity;
+    for (const w of words) {
+      const c = w.t + w.p + w.q;
+      if (c < bestCost) { bestCost = c; best = w; }
+    }
+    if (!best) return { valid: false };
+    return {
+      valid: true, types: best.types, radius: r, start,
+      len: [best.t * r, best.p * r, best.q * r],
+      length: () => (best.t + best.p + best.q) * r,
+    };
+  }
+  function dubinsLength(start, goal, r) {
+    const p = dubinsShortest(start, goal, r);
+    return p.valid ? p.length() : Infinity;
+  }
+  function sampleDubins(path, step) {
+    const out = [];
+    if (!path.valid) return out;
+    let p = { ...path.start };
+    out.push({ ...p });
+    for (let seg = 0; seg < 3; seg++) {
+      const segLen = path.len[seg];
+      const type = path.types[seg];
+      const kappa = type === "L" ? 1 / path.radius : type === "R" ? -1 / path.radius : 0;
+      let traveled = 0;
+      while (traveled < segLen - 1e-9) {
+        const ds = Math.min(step, segLen - traveled);
+        if (Math.abs(kappa) < 1e-9) {
+          p.x += ds * Math.cos(p.theta);
+          p.y += ds * Math.sin(p.theta);
+        } else {
+          const nt = p.theta + kappa * ds;
+          p.x += (Math.sin(nt) - Math.sin(p.theta)) / kappa;
+          p.y += (-Math.cos(nt) + Math.cos(p.theta)) / kappa;
+          p.theta = normalizeAngle(nt);
+        }
+        traveled += ds;
+        out.push({ ...p });
+      }
+    }
+    return out;
+  }
+
+  // ---- binary min-heap keyed on numeric priority ----
+  class MinHeap {
+    constructor() { this.a = []; }
+    get size() { return this.a.length; }
+    push(prio, val) {
+      const a = this.a; a.push({ prio, val });
+      let i = a.length - 1;
+      while (i > 0) {
+        const par = (i - 1) >> 1;
+        if (a[par].prio <= a[i].prio) break;
+        [a[par], a[i]] = [a[i], a[par]]; i = par;
+      }
+    }
+    pop() {
+      const a = this.a; const top = a[0]; const last = a.pop();
+      if (a.length) {
+        a[0] = last; let i = 0;
+        for (;;) {
+          const l = 2 * i + 1, r = 2 * i + 2; let s = i;
+          if (l < a.length && a[l].prio < a[s].prio) s = l;
+          if (r < a.length && a[r].prio < a[s].prio) s = r;
+          if (s === i) break;
+          [a[s], a[i]] = [a[i], a[s]]; i = s;
+        }
+      }
+      return top;
+    }
+  }
+
+  // ---- Hybrid A* ----
+  const defaultPlannerConfig = () => ({
+    xy_resolution: 0.5, theta_bins: 72, step_size: 1.4, n_steer: 5,
+    steer_penalty: 1.5, steer_change_penalty: 1.5, analytic_period: 5,
+    max_iterations: 300000, goal_xy_tol: 0.6, goal_yaw_tol: 0.2,
+  });
+
+  class HybridAStar {
+    constructor(map, veh, cfg) {
+      this.map = map; this.veh = veh;
+      this.cfg = Object.assign(defaultPlannerConfig(), cfg || {});
+    }
+    poseCollisionFree(p) {
+      if (!this.map.inBounds(p.x, p.y)) return false;
+      const halfL = 0.5 * this.veh.length;
+      for (let s = -halfL; s <= halfL + 1e-6; s += 0.7) {
+        if (!this.map.isFree(p.x + s * Math.cos(p.theta), p.y + s * Math.sin(p.theta)))
+          return false;
+      }
+      return true;
+    }
+    pathCollisionFree(poses) {
+      for (const p of poses) if (!this.poseCollisionFree(p)) return false;
+      return true;
+    }
+    buildHolonomic(goal) {
+      const m = this.map, N = m.cols * m.rows;
+      const field = new Float64Array(N).fill(Infinity);
+      const g = m.worldToCell(goal.x, goal.y);
+      if (!g.ok) return field;
+      const heap = new MinHeap();
+      const gi = m.idx(g.cx, g.cy);
+      field[gi] = 0; heap.push(0, gi);
+      const dx = [1, -1, 0, 0, 1, 1, -1, -1], dy = [0, 0, 1, -1, 1, -1, 1, -1];
+      while (heap.size) {
+        const { prio: c, val: i } = heap.pop();
+        if (c > field[i]) continue;
+        const cx = i % m.cols, cy = (i / m.cols) | 0;
+        for (let k = 0; k < 8; k++) {
+          const nx = cx + dx[k], ny = cy + dy[k];
+          if (nx < 0 || nx >= m.cols || ny < 0 || ny >= m.rows) continue;
+          if (m.occupied(nx, ny)) continue;
+          const step = (k < 4 ? 1 : 1.41421356) * m.res;
+          const ni = m.idx(nx, ny), nc = c + step;
+          if (nc < field[ni]) { field[ni] = nc; heap.push(nc, ni); }
+        }
+      }
+      return field;
+    }
+    holonomicCost(field, x, y) {
+      const c = this.map.worldToCell(x, y);
+      if (!c.ok) return Infinity;
+      return field[this.map.idx(c.cx, c.cy)];
+    }
+    plan(start, goal) {
+      const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      const cfg = this.cfg, veh = this.veh, m = this.map;
+      const R = veh.minTurnRadius();
+      const res = cfg.xy_resolution, dbin = (2 * PI) / cfg.theta_bins;
+      const keyOf = (p) => {
+        const xi = Math.floor(p.x / res), yi = Math.floor(p.y / res);
+        const ti = Math.floor(mod2pi(p.theta) / dbin) % cfg.theta_bins;
+        return xi + "," + yi + "," + ti;
+      };
+      const hfield = this.buildHolonomic(goal);
+      const heuristic = (p) => {
+        const hnh = dubinsLength(p, goal, R);
+        const hh = this.holonomicCost(hfield, p.x, p.y);
+        const h = Math.max(hnh, hh);
+        return isFinite(h) ? h : hnh;
+      };
+      const steers = [];
+      if (cfg.n_steer <= 1) steers.push(0);
+      else for (let i = 0; i < cfg.n_steer; i++)
+        steers.push(-veh.max_steer + (2 * veh.max_steer * i) / (cfg.n_steer - 1));
+
+      const nodes = [];
+      const bestG = new Map();
+      const s0 = { pose: start, g: 0, f: heuristic(start), steer: 0, parent: -1 };
+      nodes.push(s0); bestG.set(keyOf(start), 0);
+      const open = new MinHeap(); open.push(s0.f, 0);
+
+      const substeps = 10, ds = cfg.step_size / substeps;
+      let goalNode = -1, analyticTail = [], iter = 0, expanded = 0;
+
+      while (open.size && iter < cfg.max_iterations) {
+        const { prio: fcur, val: idx } = open.pop();
+        iter++;
+        const cur = nodes[idx];
+        if (fcur > cur.f + 1e-9) continue;
+
+        if (dist(cur.pose, goal) < cfg.goal_xy_tol &&
+            Math.abs(normalizeAngle(cur.pose.theta - goal.theta)) < cfg.goal_yaw_tol) {
+          goalNode = idx; break;
+        }
+        const near = dist(cur.pose, goal) < 15.0;
+        if (near && iter % cfg.analytic_period === 0) {
+          const dp = dubinsShortest(cur.pose, goal, R);
+          if (dp.valid) {
+            const samp = sampleDubins(dp, 0.3);
+            if (this.pathCollisionFree(samp)) { analyticTail = samp; goalNode = idx; break; }
+          }
+        }
+        expanded++;
+        for (const steer of steers) {
+          let p = cur.pose, ok = true;
+          for (let k = 0; k < substeps; k++) {
+            p = bicycleStep(p, steer, ds, veh.wheelbase);
+            if (!this.poseCollisionFree(p)) { ok = false; break; }
+          }
+          if (!ok) continue;
+          const moveCost = cfg.step_size * (1 + cfg.steer_penalty * Math.abs(steer) +
+            cfg.steer_change_penalty * Math.abs(steer - cur.steer));
+          const gNew = cur.g + moveCost;
+          const key = keyOf(p);
+          const prev = bestG.get(key);
+          if (prev !== undefined && prev <= gNew + 1e-6) continue;
+          bestG.set(key, gNew);
+          const nn = { pose: p, g: gNew, f: gNew + heuristic(p), steer, parent: idx };
+          const nidx = nodes.length; nodes.push(nn); open.push(nn.f, nidx);
+        }
+      }
+
+      const t1 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      const result = { success: false, path: [], pathLength: 0, nodesExpanded: expanded,
+                       iterations: iter, planTimeMs: t1 - t0 };
+      if (goalNode < 0) return result;
+
+      const chain = [];
+      for (let i = goalNode; i >= 0; i = nodes[i].parent) chain.push(i);
+      chain.reverse();
+      const dense = [{ ...nodes[chain[0]].pose }];
+      for (let c = 1; c < chain.length; c++) {
+        let p = nodes[chain[c - 1]].pose;
+        const steer = nodes[chain[c]].steer;
+        for (let k = 0; k < substeps; k++) { p = bicycleStep(p, steer, ds, veh.wheelbase); dense.push({ ...p }); }
+      }
+      for (let i = 1; i < analyticTail.length; i++) dense.push(analyticTail[i]);
+      let len = 0;
+      for (let i = 1; i < dense.length; i++) len += dist(dense[i - 1], dense[i]);
+      result.success = true; result.path = dense; result.pathLength = len;
+      result.planTimeMs = t1 - t0;
+      return result;
+    }
+  }
+
+  // ---- pure-pursuit + PID controller ----
+  const defaultControllerConfig = () => ({
+    lookahead_min: 2.0, lookahead_k: 0.3, target_speed: 4.0, curve_slowdown: 3.5,
+    kp: 1.2, ki: 0.05, kd: 0.05, goal_tol: 1.0,
+  });
+
+  class PurePursuit {
+    constructor(path, veh, cfg) {
+      this.path = path; this.veh = veh;
+      this.cfg = Object.assign(defaultControllerConfig(), cfg || {});
+      this.lastIdx = 0; this.integral = 0; this.prevErr = 0;
+    }
+    nearestIndex(pose) {
+      let best = this.lastIdx, bestD = 1e18;
+      for (let i = this.lastIdx; i < this.path.length; i++) {
+        const d = dist(pose, this.path[i]);
+        if (d < bestD) { bestD = d; best = i; }
+        if (d > bestD + 5.0) break;
+      }
+      return best;
+    }
+    control(pose, speed, dt) {
+      const cmd = { steer: 0, accel: 0, target_x: 0, target_y: 0, cross_track: 0, finished: false };
+      if (!this.path.length) { cmd.finished = true; return cmd; }
+      const ni = this.nearestIndex(pose); this.lastIdx = ni;
+      const r = this.path[ni];
+      cmd.cross_track = -Math.sin(r.theta) * (pose.x - r.x) + Math.cos(r.theta) * (pose.y - r.y);
+      if (dist(pose, this.path[this.path.length - 1]) < this.cfg.goal_tol) {
+        cmd.finished = true; cmd.accel = -this.veh.max_accel; return cmd;
+      }
+      const Ld = this.cfg.lookahead_min + this.cfg.lookahead_k * Math.max(0, speed);
+      let ti = ni;
+      for (let i = ni; i < this.path.length; i++) { ti = i; if (dist(pose, this.path[i]) >= Ld) break; }
+      const target = this.path[ti];
+      cmd.target_x = target.x; cmd.target_y = target.y;
+      const alpha = normalizeAngle(Math.atan2(target.y - pose.y, target.x - pose.x) - pose.theta);
+      const ld = Math.max(dist(pose, target), 1e-3);
+      let steer = Math.atan2(2 * this.veh.wheelbase * Math.sin(alpha), ld);
+      cmd.steer = Math.max(-this.veh.max_steer, Math.min(this.veh.max_steer, steer));
+      const curveFactor = 1 / (1 + this.cfg.curve_slowdown * Math.abs(cmd.steer));
+      const vRef = this.cfg.target_speed * curveFactor;
+      const err = vRef - speed;
+      this.integral += err * dt;
+      const deriv = (err - this.prevErr) / Math.max(dt, 1e-6);
+      this.prevErr = err;
+      let accel = this.cfg.kp * err + this.cfg.ki * this.integral + this.cfg.kd * deriv;
+      cmd.accel = Math.max(-this.veh.max_accel, Math.min(this.veh.max_accel, accel));
+      return cmd;
+    }
+  }
+
+  function simulate(path, start, veh, ccfg, dt, maxTime) {
+    dt = dt || 0.05; maxTime = maxTime || 90;
+    const res = { log: [], metrics: { completed: false, sim_time: 0, cte_rms: 0, cte_max: 0, avg_speed: 0, distance: 0 } };
+    if (!path.length) return res;
+    const ctrl = new PurePursuit(path, veh, ccfg);
+    let pose = { ...start }, v = 0, t = 0;
+    let sumSq = 0, maxCte = 0, sumSpeed = 0, distTraveled = 0, n = 0, prev = { ...pose };
+    while (t < maxTime) {
+      const cmd = ctrl.control(pose, v, dt);
+      const cte = Math.abs(cmd.cross_track);
+      sumSq += cte * cte; maxCte = Math.max(maxCte, cte); sumSpeed += v; n++;
+      res.log.push({ t, x: pose.x, y: pose.y, theta: pose.theta, v, steer: cmd.steer,
+        target_x: cmd.target_x, target_y: cmd.target_y, cte: cmd.cross_track });
+      if (cmd.finished && v < 0.3) { res.metrics.completed = true; break; }
+      if (cte > 6.0) break;
+      v += cmd.accel * dt; v = Math.max(0, Math.min(veh.max_speed, v));
+      pose = bicycleStep(pose, cmd.steer, v * dt, veh.wheelbase);
+      distTraveled += dist(prev, pose); prev = { ...pose }; t += dt;
+    }
+    res.metrics.sim_time = t;
+    res.metrics.cte_rms = n ? Math.sqrt(sumSq / n) : 0;
+    res.metrics.cte_max = maxCte;
+    res.metrics.avg_speed = n ? sumSpeed / n : 0;
+    res.metrics.distance = distTraveled;
+    return res;
+  }
+
+  // ---- built-in scenarios ----
+  function makeScenario(name) {
+    const veh = defaultVehicle();
+    if (name === "scurve") {
+      const obs = [
+        { x0: 0, y0: 0, x1: 60, y1: 1 }, { x0: 0, y0: 39, x1: 60, y1: 40 },
+        { x0: 22, y0: 0, x1: 26, y1: 26 }, { x0: 36, y0: 14, x1: 40, y1: 40 },
+      ];
+      return { name, obstacles: obs, start: { x: 5, y: 20, theta: 0 }, goal: { x: 55, y: 20, theta: 0 }, veh };
+    }
+    const obs = [
+      { x0: 0, y0: 0, x1: 60, y1: 1 }, { x0: 0, y0: 39, x1: 60, y1: 40 },
+      { x0: 15, y0: 8, x1: 20, y1: 24 }, { x0: 28, y0: 18, x1: 33, y1: 40 },
+      { x0: 30, y0: 0, x1: 34, y1: 10 }, { x0: 42, y0: 10, x1: 47, y1: 30 },
+    ];
+    return { name: "obstacles", obstacles: obs, start: { x: 5, y: 20, theta: 0 }, goal: { x: 56, y: 12, theta: 0 }, veh };
+  }
+
+  const AP = {
+    normalizeAngle, mod2pi, dist, bicycleStep, defaultVehicle, GridMap,
+    dubinsShortest, dubinsLength, sampleDubins, HybridAStar, PurePursuit,
+    simulate, makeScenario, defaultPlannerConfig, defaultControllerConfig,
+  };
+  root.AP = AP;
+  if (typeof module !== "undefined" && module.exports) module.exports = AP;
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+(function(){
+  "use strict";
+  const AP = window.AP;
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const SCALE = 16;               // px per metre
+  const WORLD_W = 60, WORLD_H = 40;
+  const veh = AP.defaultVehicle();
+
+  let obstacles = [];
+  let start = { x: 5, y: 20, theta: 0 };
+  let goal  = { x: 56, y: 12, theta: 0 };
+  let plan = null;
+  let simLog = [];
+  let animIdx = 0;
+  let animating = false;
+  let mode = "obstacle";
+  let dragStart = null, dragCur = null;
+
+  const borders = () => ([
+    { x0:0, y0:0, x1:WORLD_W, y1:1 },
+    { x0:0, y0:WORLD_H-1, x1:WORLD_W, y1:WORLD_H },
+  ]);
+
+  // ---- coordinate transforms ----
+  const wx = x => x * SCALE;
+  const wy = y => cv.height - y * SCALE;
+  function pxToWorld(px, py) {
+    const rect = cv.getBoundingClientRect();
+    const sx = cv.width / rect.width, sy = cv.height / rect.height;
+    const x = (px - rect.left) * sx / SCALE;
+    const y = (cv.height - (py - rect.top) * sy) / SCALE;
+    return { x, y };
+  }
+
+  // ---- scenario ----
+  function loadPreset(name) {
+    if (name === "empty") {
+      obstacles = borders();
+      start = { x:5, y:20, theta:0 }; goal = { x:55, y:20, theta:0 };
+    } else {
+      const sc = AP.makeScenario(name);
+      obstacles = sc.obstacles.slice();
+      start = { ...sc.start }; goal = { ...sc.goal };
+    }
+    plan = null; simLog = []; animating = false; animIdx = 0;
+    setStatus("Loaded '" + name + "'. Draw obstacles or hit Plan & Drive.");
+    clearMetrics(); draw();
+  }
+
+  // ---- planning ----
+  function runPlan() {
+    animating = false;
+    const map = new AP.GridMap(WORLD_W, WORLD_H, 0.5);
+    for (const o of obstacles) map.addObstacle(o);
+    map.inflate(0.5 * veh.width + 0.2);
+    const planner = new AP.HybridAStar(map, veh);
+    setStatus("Planning…");
+    // Defer so the status paints before the (blocking) search.
+    setTimeout(() => {
+      plan = planner.plan(start, goal);
+      if (!plan.success) {
+        simLog = [];
+        setStatus("No path found — try moving the goal or clearing obstacles.");
+        document.getElementById("m_status").textContent = "FAILED";
+        document.getElementById("m_time").textContent = plan.planTimeMs.toFixed(0) + " ms";
+        document.getElementById("m_nodes").textContent = plan.nodesExpanded.toLocaleString();
+        draw();
+        return;
+      }
+      const sim = AP.simulate(plan.path, start, veh);
+      simLog = sim.log;
+      showMetrics(plan, sim.metrics);
+      animIdx = 0; animating = true;
+      setStatus("Driving the planned path…");
+      requestAnimationFrame(step);
+    }, 20);
+  }
+
+  // ---- animation ----
+  function step() {
+    if (!animating) return;
+    animIdx += 3;                       // ~3x real time
+    if (animIdx >= simLog.length) { animIdx = simLog.length - 1; animating = false; setStatus("Done."); }
+    draw();
+    const s = simLog[animIdx];
+    if (s) {
+      document.getElementById("m_speed").textContent = s.v.toFixed(1) + " m/s";
+      document.getElementById("m_cte").textContent = (s.cte*100).toFixed(0) + " cm";
+    }
+    if (animating) requestAnimationFrame(step);
+  }
+
+  // ---- drawing ----
+  function carCorners(p) {
+    const cx = p.x + Math.cos(p.theta) * (veh.length/2 - 1.0);
+    const cy = p.y + Math.sin(p.theta) * (veh.length/2 - 1.0);
+    const c = Math.cos(p.theta), s = Math.sin(p.theta);
+    const hl = veh.length/2, hw = veh.width/2;
+    return [[-hl,-hw],[hl,-hw],[hl,hw],[-hl,hw]].map(([px,py]) =>
+      [cx + px*c - py*s, cy + px*s + py*c]);
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,cv.width,cv.height);
+    // subtle grid
+    ctx.strokeStyle = "#141a24"; ctx.lineWidth = 1;
+    for (let x=0; x<=WORLD_W; x+=5){ ctx.beginPath(); ctx.moveTo(wx(x),wy(0)); ctx.lineTo(wx(x),wy(WORLD_H)); ctx.stroke(); }
+    for (let y=0; y<=WORLD_H; y+=5){ ctx.beginPath(); ctx.moveTo(wx(0),wy(y)); ctx.lineTo(wx(WORLD_W),wy(y)); ctx.stroke(); }
+
+    // obstacles
+    ctx.fillStyle = "#3a4152";
+    for (const o of obstacles) {
+      const x = Math.min(o.x0,o.x1), y = Math.max(o.y0,o.y1);
+      ctx.fillRect(wx(x), wy(y), Math.abs(o.x1-o.x0)*SCALE, Math.abs(o.y1-o.y0)*SCALE);
+    }
+    // obstacle being dragged
+    if (dragStart && dragCur) {
+      ctx.fillStyle = "rgba(120,140,170,.4)";
+      const x = Math.min(dragStart.x,dragCur.x), y = Math.max(dragStart.y,dragCur.y);
+      ctx.fillRect(wx(x), wy(y), Math.abs(dragCur.x-dragStart.x)*SCALE, Math.abs(dragCur.y-dragStart.y)*SCALE);
+    }
+
+    // planned path
+    if (plan && plan.success) {
+      ctx.strokeStyle = "#f2c744"; ctx.lineWidth = 3; ctx.beginPath();
+      plan.path.forEach((p,i)=>{ const X=wx(p.x),Y=wy(p.y); i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); });
+      ctx.stroke();
+    }
+    // tracked trajectory up to current frame
+    if (simLog.length) {
+      ctx.strokeStyle = "#2ea3f2"; ctx.lineWidth = 2; ctx.beginPath();
+      for (let i=0; i<=animIdx && i<simLog.length; i++){ const p=simLog[i],X=wx(p.x),Y=wy(p.y); i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); }
+      ctx.stroke();
+    }
+
+    // start & goal
+    drawPose(start, "#3ddc84");
+    drawPose(goal, "#ff6b6b", true);
+
+    // car
+    const s = simLog[animIdx];
+    if (s) {
+      const corners = carCorners(s);
+      ctx.fillStyle = "rgba(46,163,242,.9)"; ctx.strokeStyle="#bfe3ff"; ctx.lineWidth=1.5;
+      ctx.beginPath(); corners.forEach(([X,Y],i)=>{ const px=wx(X),py=wy(Y); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      // look-ahead marker
+      ctx.strokeStyle="#ff6b6b"; ctx.lineWidth=2;
+      const lx=wx(s.target_x), ly=wy(s.target_y);
+      ctx.beginPath(); ctx.moveTo(lx-5,ly-5); ctx.lineTo(lx+5,ly+5); ctx.moveTo(lx+5,ly-5); ctx.lineTo(lx-5,ly+5); ctx.stroke();
+    }
+  }
+
+  function drawPose(p, color, star) {
+    const X = wx(p.x), Y = wy(p.y);
+    ctx.fillStyle = color;
+    if (star) {
+      ctx.beginPath();
+      for (let i=0;i<10;i++){ const a=-Math.PI/2 + i*Math.PI/5; const r=i%2?4:9; const px=X+Math.cos(a)*r, py=Y+Math.sin(a)*r; i?ctx.lineTo(px,py):ctx.moveTo(px,py); }
+      ctx.closePath(); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.arc(X,Y,7,0,2*Math.PI); ctx.fill();
+    }
+    // heading tick
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X,Y); ctx.lineTo(X+Math.cos(p.theta)*16, Y-Math.sin(p.theta)*16); ctx.stroke();
+  }
+
+  // ---- metrics ----
+  function showMetrics(plan, m) {
+    document.getElementById("m_status").textContent = "SUCCESS";
+    document.getElementById("m_time").textContent = plan.planTimeMs.toFixed(0) + " ms";
+    document.getElementById("m_nodes").textContent = plan.nodesExpanded.toLocaleString();
+    document.getElementById("m_len").textContent = plan.pathLength.toFixed(1) + " m";
+    document.getElementById("m_rms").textContent = (m.cte_rms*100).toFixed(1) + " cm";
+    document.getElementById("m_max").textContent = (m.cte_max*100).toFixed(1) + " cm";
+  }
+  function clearMetrics() {
+    ["m_status","m_time","m_nodes","m_len","m_rms","m_max","m_speed","m_cte"]
+      .forEach(id => document.getElementById(id).textContent = "—");
+  }
+  const setStatus = t => document.getElementById("status").textContent = t;
+
+  // ---- interaction ----
+  cv.addEventListener("mousedown", e => {
+    const w = pxToWorld(e.clientX, e.clientY);
+    if (mode === "obstacle") { dragStart = w; dragCur = w; }
+    else if (mode === "start") { start = { x:w.x, y:w.y, theta:start.theta }; plan=null; simLog=[]; draw(); }
+    else if (mode === "goal") { goal = { x:w.x, y:w.y, theta:goal.theta }; plan=null; simLog=[]; draw(); }
+  });
+  cv.addEventListener("mousemove", e => {
+    if (!dragStart) return;
+    dragCur = pxToWorld(e.clientX, e.clientY); draw();
+  });
+  window.addEventListener("mouseup", () => {
+    if (dragStart && dragCur) {
+      if (Math.abs(dragCur.x-dragStart.x) > 0.4 && Math.abs(dragCur.y-dragStart.y) > 0.4)
+        obstacles.push({ x0:dragStart.x, y0:dragStart.y, x1:dragCur.x, y1:dragCur.y });
+      plan=null; simLog=[];
+    }
+    dragStart = dragCur = null; draw();
+  });
+
+  document.getElementById("mode").addEventListener("click", e => {
+    const lab = e.target.closest("label"); if (!lab) return;
+    mode = lab.dataset.m;
+    document.querySelectorAll("#mode label").forEach(l => l.classList.toggle("active", l===lab));
+    cv.style.cursor = mode==="obstacle" ? "crosshair" : "pointer";
+  });
+  document.getElementById("plan").addEventListener("click", runPlan);
+  document.getElementById("reset").addEventListener("click", () => loadPreset(document.getElementById("preset").value));
+  document.getElementById("clear").addEventListener("click", () => { obstacles = borders(); plan=null; simLog=[]; clearMetrics(); setStatus("Obstacles cleared."); draw(); });
+  document.getElementById("preset").addEventListener("change", e => loadPreset(e.target.value));
+
+  loadPreset("obstacles");
+})();
+</script>
+</body>
+</html>

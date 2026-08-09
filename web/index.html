@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hybrid A* Motion Planner — Live Demo</title>
+<style>
+  :root {
+    --bg:#0e1117; --panel:#161b24; --panel2:#1b2230; --line:#2a3242;
+    --text:#e6e9ef; --muted:#8b93a7; --accent:#2ea3f2; --plan:#f2c744;
+    --ok:#3ddc84; --goal:#ff6b6b;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;
+  }
+  header { padding:20px 24px 8px; }
+  h1 { margin:0; font-size:20px; font-weight:650; letter-spacing:.2px; }
+  header p { margin:6px 0 0; color:var(--muted); font-size:13px; max-width:820px; }
+  .wrap { display:flex; gap:18px; padding:16px 24px 28px; flex-wrap:wrap; align-items:flex-start; }
+  .stage { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  canvas { display:block; border-radius:8px; background:#0b0e14; cursor:crosshair; max-width:100%; height:auto; }
+  .side { width:280px; display:flex; flex-direction:column; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600; }
+  button {
+    font:inherit; color:var(--text); background:var(--panel2); border:1px solid var(--line);
+    border-radius:8px; padding:9px 12px; cursor:pointer; transition:.12s; width:100%;
+  }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#04121f; font-weight:650; }
+  button.primary:hover { filter:brightness(1.08); }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  select, .seg { width:100%; }
+  select { font:inherit; color:var(--text); background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg label { flex:1; text-align:center; padding:8px 4px; font-size:12px; cursor:pointer; color:var(--muted); }
+  .seg input { display:none; }
+  .seg label.active { background:var(--panel2); color:var(--text); }
+  .metrics { display:grid; grid-template-columns:1fr auto; gap:6px 10px; font-size:13px; }
+  .metrics .k { color:var(--muted); }
+  .metrics .v { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .legend { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
+  .legend span { display:inline-block; width:22px; height:0; border-top-width:3px; border-top-style:solid; margin-right:8px; vertical-align:middle; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:8px; vertical-align:middle; }
+  .hint { color:var(--muted); font-size:12px; margin-top:2px; }
+  .status { font-size:12px; color:var(--muted); min-height:16px; }
+  a { color:var(--accent); }
+  footer { padding:0 24px 28px; color:var(--muted); font-size:12px; max-width:900px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Hybrid A* Motion Planner — Live Demo</h1>
+  <p>A car-like vehicle plans a kinematically feasible path through a costmap with <b>Hybrid A*</b>
+     (dual Dubins + Dijkstra heuristic, analytic Dubins goal expansion), then tracks it with a
+     <b>pure-pursuit + PID</b> controller on a bicycle-model simulation — all running live in your browser.
+     Draw obstacles, move the goal, and hit <b>Plan &amp; Drive</b>.</p>
+</header>
+
+<div class="wrap">
+  <div class="stage">
+    <canvas id="cv" width="960" height="640"></canvas>
+  </div>
+
+  <div class="side">
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="row" style="margin-bottom:10px;">
+        <button id="plan" class="primary">▶ Plan &amp; Drive</button>
+      </div>
+      <div class="row" style="margin-bottom:10px;">
+        <button id="clear">Clear obstacles</button>
+        <button id="reset">Reset</button>
+      </div>
+      <label class="hint">Scenario preset</label>
+      <select id="preset" style="margin:4px 0 12px;">
+        <option value="obstacles">Obstacle field</option>
+        <option value="scurve">S-curve</option>
+        <option value="empty">Empty arena</option>
+      </select>
+      <label class="hint">Click / drag mode</label>
+      <div class="seg" id="mode" style="margin-top:4px;">
+        <label data-m="obstacle" class="active"><input type="radio" name="mode" checked>Obstacle</label>
+        <label data-m="start"><input type="radio" name="mode">Start</label>
+        <label data-m="goal"><input type="radio" name="mode">Goal</label>
+      </div>
+      <div class="status" id="status" style="margin-top:10px;">Ready.</div>
+    </div>
+
+    <div class="card">
+      <h2>Metrics</h2>
+      <div class="metrics">
+        <div class="k">Plan status</div><div class="v" id="m_status">—</div>
+        <div class="k">Plan time</div><div class="v" id="m_time">—</div>
+        <div class="k">Nodes expanded</div><div class="v" id="m_nodes">—</div>
+        <div class="k">Path length</div><div class="v" id="m_len">—</div>
+        <div class="k">Cross-track RMS</div><div class="v" id="m_rms">—</div>
+        <div class="k">Cross-track max</div><div class="v" id="m_max">—</div>
+        <div class="k">Speed (live)</div><div class="v" id="m_speed">—</div>
+        <div class="k">Cross-track (live)</div><div class="v" id="m_cte">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Legend</h2>
+      <div class="legend">
+        <div><span style="border-top-color:var(--plan);"></span>Hybrid A* plan</div>
+        <div><span style="border-top-color:var(--accent);"></span>Tracked trajectory</div>
+        <div><i class="dot" style="background:var(--ok);"></i>Start &nbsp;
+             <i class="dot" style="background:var(--goal);"></i>Goal</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  This runs a faithful JavaScript port of the C++ implementation in this repo (same bicycle model,
+  heuristics, Dubins math, and controller). The C++ version is the reference; it plans the same
+  scenarios in ~150&nbsp;ms. Not production autonomy code — a clean implementation of a known
+  algorithm (Hybrid A*, Dolgov &amp; Thrun et&nbsp;al.) with measured results.
+</footer>
+
+<script src="planner.js"></script>
+<script>
+(function(){
+  "use strict";
+  const AP = window.AP;
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const SCALE = 16;               // px per metre
+  const WORLD_W = 60, WORLD_H = 40;
+  const veh = AP.defaultVehicle();
+
+  let obstacles = [];
+  let start = { x: 5, y: 20, theta: 0 };
+  let goal  = { x: 56, y: 12, theta: 0 };
+  let plan = null;
+  let simLog = [];
+  let animIdx = 0;
+  let animating = false;
+  let mode = "obstacle";
+  let dragStart = null, dragCur = null;
+
+  const borders = () => ([
+    { x0:0, y0:0, x1:WORLD_W, y1:1 },
+    { x0:0, y0:WORLD_H-1, x1:WORLD_W, y1:WORLD_H },
+  ]);
+
+  // ---- coordinate transforms ----
+  const wx = x => x * SCALE;
+  const wy = y => cv.height - y * SCALE;
+  function pxToWorld(px, py) {
+    const rect = cv.getBoundingClientRect();
+    const sx = cv.width / rect.width, sy = cv.height / rect.height;
+    const x = (px - rect.left) * sx / SCALE;
+    const y = (cv.height - (py - rect.top) * sy) / SCALE;
+    return { x, y };
+  }
+
+  // ---- scenario ----
+  function loadPreset(name) {
+    if (name === "empty") {
+      obstacles = borders();
+      start = { x:5, y:20, theta:0 }; goal = { x:55, y:20, theta:0 };
+    } else {
+      const sc = AP.makeScenario(name);
+      obstacles = sc.obstacles.slice();
+      start = { ...sc.start }; goal = { ...sc.goal };
+    }
+    plan = null; simLog = []; animating = false; animIdx = 0;
+    setStatus("Loaded '" + name + "'. Draw obstacles or hit Plan & Drive.");
+    clearMetrics(); draw();
+  }
+
+  // ---- planning ----
+  function runPlan() {
+    animating = false;
+    const map = new AP.GridMap(WORLD_W, WORLD_H, 0.5);
+    for (const o of obstacles) map.addObstacle(o);
+    map.inflate(0.5 * veh.width + 0.2);
+    const planner = new AP.HybridAStar(map, veh);
+    setStatus("Planning…");
+    // Defer so the status paints before the (blocking) search.
+    setTimeout(() => {
+      plan = planner.plan(start, goal);
+      if (!plan.success) {
+        simLog = [];
+        setStatus("No path found — try moving the goal or clearing obstacles.");
+        document.getElementById("m_status").textContent = "FAILED";
+        document.getElementById("m_time").textContent = plan.planTimeMs.toFixed(0) + " ms";
+        document.getElementById("m_nodes").textContent = plan.nodesExpanded.toLocaleString();
+        draw();
+        return;
+      }
+      const sim = AP.simulate(plan.path, start, veh);
+      simLog = sim.log;
+      showMetrics(plan, sim.metrics);
+      animIdx = 0; animating = true;
+      setStatus("Driving the planned path…");
+      requestAnimationFrame(step);
+    }, 20);
+  }
+
+  // ---- animation ----
+  function step() {
+    if (!animating) return;
+    animIdx += 3;                       // ~3x real time
+    if (animIdx >= simLog.length) { animIdx = simLog.length - 1; animating = false; setStatus("Done."); }
+    draw();
+    const s = simLog[animIdx];
+    if (s) {
+      document.getElementById("m_speed").textContent = s.v.toFixed(1) + " m/s";
+      document.getElementById("m_cte").textContent = (s.cte*100).toFixed(0) + " cm";
+    }
+    if (animating) requestAnimationFrame(step);
+  }
+
+  // ---- drawing ----
+  function carCorners(p) {
+    const cx = p.x + Math.cos(p.theta) * (veh.length/2 - 1.0);
+    const cy = p.y + Math.sin(p.theta) * (veh.length/2 - 1.0);
+    const c = Math.cos(p.theta), s = Math.sin(p.theta);
+    const hl = veh.length/2, hw = veh.width/2;
+    return [[-hl,-hw],[hl,-hw],[hl,hw],[-hl,hw]].map(([px,py]) =>
+      [cx + px*c - py*s, cy + px*s + py*c]);
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,cv.width,cv.height);
+    // subtle grid
+    ctx.strokeStyle = "#141a24"; ctx.lineWidth = 1;
+    for (let x=0; x<=WORLD_W; x+=5){ ctx.beginPath(); ctx.moveTo(wx(x),wy(0)); ctx.lineTo(wx(x),wy(WORLD_H)); ctx.stroke(); }
+    for (let y=0; y<=WORLD_H; y+=5){ ctx.beginPath(); ctx.moveTo(wx(0),wy(y)); ctx.lineTo(wx(WORLD_W),wy(y)); ctx.stroke(); }
+
+    // obstacles
+    ctx.fillStyle = "#3a4152";
+    for (const o of obstacles) {
+      const x = Math.min(o.x0,o.x1), y = Math.max(o.y0,o.y1);
+      ctx.fillRect(wx(x), wy(y), Math.abs(o.x1-o.x0)*SCALE, Math.abs(o.y1-o.y0)*SCALE);
+    }
+    // obstacle being dragged
+    if (dragStart && dragCur) {
+      ctx.fillStyle = "rgba(120,140,170,.4)";
+      const x = Math.min(dragStart.x,dragCur.x), y = Math.max(dragStart.y,dragCur.y);
+      ctx.fillRect(wx(x), wy(y), Math.abs(dragCur.x-dragStart.x)*SCALE, Math.abs(dragCur.y-dragStart.y)*SCALE);
+    }
+
+    // planned path
+    if (plan && plan.success) {
+      ctx.strokeStyle = "#f2c744"; ctx.lineWidth = 3; ctx.beginPath();
+      plan.path.forEach((p,i)=>{ const X=wx(p.x),Y=wy(p.y); i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); });
+      ctx.stroke();
+    }
+    // tracked trajectory up to current frame
+    if (simLog.length) {
+      ctx.strokeStyle = "#2ea3f2"; ctx.lineWidth = 2; ctx.beginPath();
+      for (let i=0; i<=animIdx && i<simLog.length; i++){ const p=simLog[i],X=wx(p.x),Y=wy(p.y); i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); }
+      ctx.stroke();
+    }
+
+    // start & goal
+    drawPose(start, "#3ddc84");
+    drawPose(goal, "#ff6b6b", true);
+
+    // car
+    const s = simLog[animIdx];
+    if (s) {
+      const corners = carCorners(s);
+      ctx.fillStyle = "rgba(46,163,242,.9)"; ctx.strokeStyle="#bfe3ff"; ctx.lineWidth=1.5;
+      ctx.beginPath(); corners.forEach(([X,Y],i)=>{ const px=wx(X),py=wy(Y); i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      // look-ahead marker
+      ctx.strokeStyle="#ff6b6b"; ctx.lineWidth=2;
+      const lx=wx(s.target_x), ly=wy(s.target_y);
+      ctx.beginPath(); ctx.moveTo(lx-5,ly-5); ctx.lineTo(lx+5,ly+5); ctx.moveTo(lx+5,ly-5); ctx.lineTo(lx-5,ly+5); ctx.stroke();
+    }
+  }
+
+  function drawPose(p, color, star) {
+    const X = wx(p.x), Y = wy(p.y);
+    ctx.fillStyle = color;
+    if (star) {
+      ctx.beginPath();
+      for (let i=0;i<10;i++){ const a=-Math.PI/2 + i*Math.PI/5; const r=i%2?4:9; const px=X+Math.cos(a)*r, py=Y+Math.sin(a)*r; i?ctx.lineTo(px,py):ctx.moveTo(px,py); }
+      ctx.closePath(); ctx.fill();
+    } else {
+      ctx.beginPath(); ctx.arc(X,Y,7,0,2*Math.PI); ctx.fill();
+    }
+    // heading tick
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X,Y); ctx.lineTo(X+Math.cos(p.theta)*16, Y-Math.sin(p.theta)*16); ctx.stroke();
+  }
+
+  // ---- metrics ----
+  function showMetrics(plan, m) {
+    document.getElementById("m_status").textContent = "SUCCESS";
+    document.getElementById("m_time").textContent = plan.planTimeMs.toFixed(0) + " ms";
+    document.getElementById("m_nodes").textContent = plan.nodesExpanded.toLocaleString();
+    document.getElementById("m_len").textContent = plan.pathLength.toFixed(1) + " m";
+    document.getElementById("m_rms").textContent = (m.cte_rms*100).toFixed(1) + " cm";
+    document.getElementById("m_max").textContent = (m.cte_max*100).toFixed(1) + " cm";
+  }
+  function clearMetrics() {
+    ["m_status","m_time","m_nodes","m_len","m_rms","m_max","m_speed","m_cte"]
+      .forEach(id => document.getElementById(id).textContent = "—");
+  }
+  const setStatus = t => document.getElementById("status").textContent = t;
+
+  // ---- interaction ----
+  cv.addEventListener("mousedown", e => {
+    const w = pxToWorld(e.clientX, e.clientY);
+    if (mode === "obstacle") { dragStart = w; dragCur = w; }
+    else if (mode === "start") { start = { x:w.x, y:w.y, theta:start.theta }; plan=null; simLog=[]; draw(); }
+    else if (mode === "goal") { goal = { x:w.x, y:w.y, theta:goal.theta }; plan=null; simLog=[]; draw(); }
+  });
+  cv.addEventListener("mousemove", e => {
+    if (!dragStart) return;
+    dragCur = pxToWorld(e.clientX, e.clientY); draw();
+  });
+  window.addEventListener("mouseup", () => {
+    if (dragStart && dragCur) {
+      if (Math.abs(dragCur.x-dragStart.x) > 0.4 && Math.abs(dragCur.y-dragStart.y) > 0.4)
+        obstacles.push({ x0:dragStart.x, y0:dragStart.y, x1:dragCur.x, y1:dragCur.y });
+      plan=null; simLog=[];
+    }
+    dragStart = dragCur = null; draw();
+  });
+
+  document.getElementById("mode").addEventListener("click", e => {
+    const lab = e.target.closest("label"); if (!lab) return;
+    mode = lab.dataset.m;
+    document.querySelectorAll("#mode label").forEach(l => l.classList.toggle("active", l===lab));
+    cv.style.cursor = mode==="obstacle" ? "crosshair" : "pointer";
+  });
+  document.getElementById("plan").addEventListener("click", runPlan);
+  document.getElementById("reset").addEventListener("click", () => loadPreset(document.getElementById("preset").value));
+  document.getElementById("clear").addEventListener("click", () => { obstacles = borders(); plan=null; simLog=[]; clearMetrics(); setStatus("Obstacles cleared."); draw(); });
+  document.getElementById("preset").addEventListener("change", e => loadPreset(e.target.value));
+
+  loadPreset("obstacles");
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "scenario": "scurve",
+  "map": {"width": 60, "height": 40, "res": 0.5},
+  "vehicle": {"L": 2.7, "width": 1.9, "length": 4.5, "min_turn_radius": 4.40381},
+  "start": [5, 20, 0],
+  "goal": [55, 20, 0],
+  "inflation": 1.15,
+  "planning": {"success": true, "nodes_expanded": 26494, "iterations": 26495, "plan_time_ms": 365.369, "path_length_m": 65.4276},
+  "tracking": {"completed": true, "cte_rms_m": 0.0939909, "cte_max_m": 0.203521, "avg_speed_mps": 2.33462, "sim_time_s": 27.65}
+}
