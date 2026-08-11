@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <b>▶ <a href="https://YOUR-USERNAME.github.io/hybrid-astar-planner/web/demo.html">Try the live interactive demo</a></b>
+  <b>▶ <a href="https://Jafar-97.github.io/hybrid-astar-planner/web/demo.html">Try the live interactive demo</a></b>
   &nbsp;·&nbsp; no install — draw obstacles, set a goal, watch it plan and drive
 </p>
 
